@@ -1,0 +1,175 @@
+#!/usr/env python
+
+'''scribe_tail: A simple script for sending messages to scribe.'''
+
+import os, sys, time
+import argparse
+from scribe import scribe
+from thrift.transport import TTransport, TSocket
+from thrift.protocol import TBinaryProtocol
+import socket
+import logging
+import logging.handlers
+import traceback
+
+import tailer
+
+
+class Scribe(object):
+
+    def __init__(self, host, port, category):
+        self.category = category
+        self.host = host
+        self.port = port
+        self.socket = TSocket.TSocket(host=self.host, port=self.port)
+        self.transport = TTransport.TFramedTransport(self.socket)
+        self.protocol = TBinaryProtocol.TBinaryProtocol(trans=self.transport, strictRead=False, strictWrite=False)
+        self.client = scribe.Client(iprot=self.protocol, oprot=self.protocol)
+        self.transport.open()
+
+    def send(self, msg):
+        log_entry = scribe.LogEntry(category=self.category, message=msg)
+        return self.client.Log(messages=[log_entry])
+
+    def close(self):
+        self.transport.close()
+
+    def __del__(self):
+        self.close()
+        
+
+class FailStore(object):
+
+    def __init__(self, fail_store_path, maxMegaBytes, backupCount):
+        self.fail_store_path = fail_store_path
+        self.fail_store_filename = fail_store_path + 'scribe_tail_fail_store'
+
+        self.logger = logging.getLogger('SribeTailFailStore')
+        self.logger.setLevel(logging.ERROR)
+
+        formatter = logging.Formatter('%(message)s')
+        handler = logging.handlers.RotatingFileHandler(self.fail_store_filename, maxBytes=maxMegaBytes*1024*1024, backupCount=backupCount)
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+
+    def log(self, msg):
+        self.logger.error(msg)
+
+
+
+class WhereStore(object):
+
+    def __init__(self, target_file):
+        self.where_file_name = target_file.name + '.scribe_tail'
+        if not self.exists():
+            self.touch()
+        self.f = open(self.where_file_name, 'r+')
+
+    def touch(self):
+        open(self.where_file_name, 'w').close()
+
+    def exists(self):
+        return os.path.exists(self.where_file_name)
+
+    def where_file_ready(self):
+        return (self.f and not self.f.closed)
+
+    def start(self):
+        if self.where_file_ready():
+            self.f.seek(0)
+            start = self.f.read().strip()
+            if start == "":
+                return None
+            else:
+                return int(start)
+        else:
+            return None
+
+    def where(self, where):
+        if self.where_file_ready():
+            self.f.seek(0)
+            self.f.write(str(where))
+            self.f.truncate()
+            self.f.flush()
+
+    def __del__(self):
+        self.f.close()
+
+
+
+def follow(scribe_client, target_file, delay, read_line_buf_size, fail_store, where_store):
+
+    read_line_buf = []
+    
+    for line, where in tailer.follow(target_file, delay, where_store.start()):
+
+        read_line_buf.append( (line, where) )
+
+        if len(read_line_buf) >= read_line_buf_size:
+
+            where_store.where(read_line_buf[-1][1])
+
+            data = '\n'.join([ lw[0] for lw in read_line_buf]) + '\n'
+
+            result = None
+
+            try:
+
+                result = scribe_client.send(data)
+
+            except TTransport.TTransportException as e:
+                fail_store.log(data)
+                traceback.print_exc(file=sys.stdio)
+            except socket.error as e:
+                fail_store.log(data)
+                traceback.print_exc(file=sys.stdio)
+
+
+            if result == scribe.ResultCode.OK:
+                pass
+            elif result == scribe.ResultCode.TRY_LATER:
+                fail_store.log(data)
+                print 'try later'
+            else:
+                fail_store.log(data)
+                print 'unknown error'
+
+            read_line_buf = []
+
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Follow file and send data to scribe.')
+    parser.add_argument('FILE', metavar='FILE', type=file, nargs=1, help='target file name')
+    parser.add_argument('--category', required=True, help='scribe category')
+    parser.add_argument('--host', default='127.0.0.1', help='scribe host (default: 127.0.0.1)')
+    parser.add_argument('--port', default=1463, type=int, help='scribe port (default: 1463)')
+    parser.add_argument('--follow_delay', type=float, default=0.5, help='follow file delay(Sec) (default: 0.5)')
+    parser.add_argument('--read_line_buf_size', type=int, default=100, help='read line buffer size (default: 100)')
+    parser.add_argument('--fail_store_path', required=True, help='store path to write scribe send failed data')
+    parser.add_argument('--fail_store_mb_per_file', type=int, default=500, help='fail store file size(MB) (default: 500)')
+    parser.add_argument('--fail_store_backup_count', type=int, default=5, help='fail store file backup count (default: 5)')
+    return parser.parse_args()
+
+
+
+def main():
+
+    args = parse_args()
+    target_file = args.FILE[0]
+
+    # Scribe client
+    scribe_client = Scribe(args.host, args.port, args.category)
+
+    # Fail store
+    fail_store = FailStore(args.fail_store_path, args.fail_store_mb_per_file, args.fail_store_backup_count)
+
+    # Where to start
+    where_store = WhereStore(target_file)
+
+    # Follow the file and send data to scribe
+    follow(scribe_client, target_file, args.follow_delay, args.read_line_buf_size, fail_store, where_store)
+
+
+if __name__ == "__main__":
+    main()
