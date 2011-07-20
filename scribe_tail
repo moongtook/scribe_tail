@@ -171,7 +171,7 @@ class WhenceStore(object):
             return None
 
     def whence(self, whence):
-        assert type(whence) == int, 'position value must be int type'
+        assert type(whence) in (int, long), 'whence must be int or long'
         if self.whence_file_ready():
             self.f.seek(0)
             self.f.write(str(whence))
@@ -221,10 +221,10 @@ def flush(lines, scribe_client, whence_store=None, fail_store=None):
 
     except TTransport.TTransportException as e:
         fail_store.log(data)
-        traceback.print_exc(file=sys.stdio)
+        traceback.print_exc(file=sys.stdout)
     except socket.error as e:
         fail_store.log(data)
-        traceback.print_exc(file=sys.stdio)
+        traceback.print_exc(file=sys.stdout)
 
 
     if result == scribe.ResultCode.OK:
