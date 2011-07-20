@@ -208,11 +208,12 @@ def follow(scribe_client, target_file, delay, read_line_buf_size, fail_store, wh
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Follow file and send data to scribe.')
+    parser = argparse.ArgumentParser(prog='scribe_tail', description='Follow file and send data to scribe.')
     parser.add_argument('FILE', metavar='FILE', type=file, nargs=1, help='target file name')
-    parser.add_argument('--category', required=True, help='scribe category')
-    parser.add_argument('--host', default='127.0.0.1', help='scribe host (default: 127.0.0.1)')
-    parser.add_argument('--port', default=1463, type=int, help='scribe port (default: 1463)')
+    parser.add_argument('-v', '--version', action='version', version='%(prog)s 0.3')
+    parser.add_argument('-c', '--category', required=True, help='scribe category')
+    parser.add_argument('-l', '--host', default='127.0.0.1', help='scribe host (default: 127.0.0.1)')
+    parser.add_argument('-p', '--port', default=1463, type=int, help='scribe port (default: 1463)')
     parser.add_argument('--follow_delay', type=float, default=0.5, help='follow file delay(Sec) (default: 0.5)')
     parser.add_argument('--read_line_buf_size', type=int, default=100, help='read line buffer size (default: 100)')
     parser.add_argument('--fail_store_path', required=True, help='store path to write scribe send failed data')
