@@ -15,10 +15,10 @@ import traceback
 
 class Tailer(object):
     """\
+    http://pypi.python.org/pypi/tailer
+
     Implements tailing and heading functionality like GNU tail and head
     commands.
-
-    http://pypi.python.org/pypi/tailer
     """
     line_terminators = ('\r\n', '\n', '\r')
 
@@ -329,10 +329,10 @@ def follow(scribe_client, target_file, delay, read_line_buf_size, fail_store, wh
                 pass
             elif result == scribe.ResultCode.TRY_LATER:
                 fail_store.log(data)
-                print 'try later'
+                print 'Scribe error: TRY_LATER'
             else:
                 fail_store.log(data)
-                print 'unknown error'
+                print 'Scribe error: Unknown'
 
             read_line_buf = []
 
