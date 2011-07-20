@@ -13,12 +13,13 @@ import logging
 import logging.handlers
 import traceback
 
+
+
 class Tailer(object):
     """\
-    http://pypi.python.org/pypi/tailer
+    Implements tailing functionality like GNU tail commands.
 
-    Implements tailing and heading functionality like GNU tail and head
-    commands.
+    Based on: http://pypi.python.org/pypi/tailer
     """
     line_terminators = ('\r\n', '\n', '\r')
 
@@ -29,13 +30,17 @@ class Tailer(object):
     def seek(self, pos, whence=0):
         self.file.seek(pos, whence)
 
-    def follow(self, delay=1.0, start=None):
+    def time_is_up_to_flush(self, last, now, flush_interval):
+        return (now - last > flush_interval)
+
+    def follow(self, delay=1.0, flush_interval=3.0, start=None):
         """\
         Iterator generator that returns lines as data is added to the file.
 
         Based on: http://aspn.activestate.com/ASPN/Cookbook/Python/Recipe/157035
         """
         trailing = True       
+        last_flush_time = time.time()
 
         if start == None:
             with_start = False
@@ -68,10 +73,17 @@ class Tailer(object):
 
                 trailing = False
                 next_where = self.file.tell()
-                yield line, next_where
+                # flush, line, where
+                yield False, line, next_where
             else:
                 trailing = True
                 self.seek(where)
+
+                if self.time_is_up_to_flush(last_flush_time, time.time(), flush_interval):
+                    last_flush_time = time.time()
+                    # flush, line, where
+                    yield True, None, None
+
                 time.sleep(delay)
 
     def __iter__(self):
@@ -103,13 +115,14 @@ class Scribe(object):
 
     def __del__(self):
         self.close()
-        
+
+
 
 class FailStore(object):
 
     def __init__(self, fail_store_path, maxMegaBytes, backupCount):
         self.fail_store_path = fail_store_path
-        self.fail_store_filename = fail_store_path + 'scribe_tail_fail_store'
+        self.fail_store_filename = os.path.join(fail_store_path, 'scribe_tail_fail_store.log')
 
         self.logger = logging.getLogger('SribeTailFailStore')
         self.logger.setLevel(logging.ERROR)
@@ -153,6 +166,7 @@ class WhereStore(object):
             return None
 
     def where(self, where):
+        assert type(where) == int, 'position value must be int type'
         if self.where_file_ready():
             self.f.seek(0)
             self.f.write(str(where))
@@ -164,46 +178,54 @@ class WhereStore(object):
 
 
 
-def follow(scribe_client, target_file, delay, read_line_buf_size, fail_store, where_store):
+def follow(scribe_client, target_file, delay, flush_interval, read_line_buf_size, where_store, fail_store):
 
     read_line_buf = []
 
     tailer = Tailer(target_file)
     
-    for line, where in tailer.follow(delay, where_store.start()):
+    for time_to_flush, line, where in tailer.follow(delay, flush_interval, where_store.start()):
 
-        read_line_buf.append( (line, where) )
-
-        if len(read_line_buf) >= read_line_buf_size:
-
-            where_store.where(read_line_buf[-1][1])
-
-            data = '\n'.join([ lw[0] for lw in read_line_buf]) + '\n'
-
-            result = None
-
-            try:
-
-                result = scribe_client.send(data)
-
-            except TTransport.TTransportException as e:
-                fail_store.log(data)
-                traceback.print_exc(file=sys.stdio)
-            except socket.error as e:
-                fail_store.log(data)
-                traceback.print_exc(file=sys.stdio)
+        if time_to_flush:
+            if len(read_line_buf) != 0:
+                flush(read_line_buf, scribe_client, where_store, fail_store)
+        else:
+            read_line_buf.append( (line, where) )
+            if len(read_line_buf) >= read_line_buf_size:
+                flush(read_line_buf, scribe_client, where_store, fail_store)
 
 
-            if result == scribe.ResultCode.OK:
-                pass
-            elif result == scribe.ResultCode.TRY_LATER:
-                fail_store.log(data)
-                print 'Scribe error: TRY_LATER'
-            else:
-                fail_store.log(data)
-                print 'Scribe error: Unknown'
 
-            read_line_buf = []
+def flush(lines, scribe_client, where_store, fail_store):
+
+    where_store.where(lines[-1][1])
+
+    data = '\n'.join([ lw[0] for lw in lines]) + '\n'
+
+    result = None
+
+    try:
+
+        result = scribe_client.send(data)
+
+    except TTransport.TTransportException as e:
+        fail_store.log(data)
+        traceback.print_exc(file=sys.stdio)
+    except socket.error as e:
+        fail_store.log(data)
+        traceback.print_exc(file=sys.stdio)
+
+
+    if result == scribe.ResultCode.OK:
+        pass
+    elif result == scribe.ResultCode.TRY_LATER:
+        fail_store.log(data)
+        print 'Scribe error: TRY_LATER'
+    else:
+        fail_store.log(data)
+        print 'Scribe error: Unknown'
+
+    del lines[:]
 
 
 
@@ -216,6 +238,7 @@ def parse_args():
     parser.add_argument('-p', '--port', default=1463, type=int, help='scribe port (default: 1463)')
     parser.add_argument('--follow_delay', type=float, default=0.5, help='follow file delay(Sec) (default: 0.5)')
     parser.add_argument('--read_line_buf_size', type=int, default=100, help='read line buffer size (default: 100)')
+    parser.add_argument('--flush_interval', type=float, default=10.0, help='flush read line buffer interval(Sec) (default: 10.0)')
     parser.add_argument('--fail_store_path', required=True, help='store path to write scribe send failed data')
     parser.add_argument('--fail_store_mb_per_file', type=int, default=200, help='fail store file size(MB) (default: 200)')
     parser.add_argument('--fail_store_backup_count', type=int, default=5, help='fail store file backup count (default: 5)')
@@ -231,14 +254,14 @@ def main():
     # Scribe client
     scribe_client = Scribe(args.host, args.port, args.category)
 
-    # Fail store
-    fail_store = FailStore(args.fail_store_path, args.fail_store_mb_per_file, args.fail_store_backup_count)
-
     # Where to start
     where_store = WhereStore(target_file)
 
+    # Fail store
+    fail_store = FailStore(args.fail_store_path, args.fail_store_mb_per_file, args.fail_store_backup_count)
+
     # Follow the file and send data to scribe
-    follow(scribe_client, target_file, args.follow_delay, args.read_line_buf_size, fail_store, where_store)
+    follow(scribe_client, target_file, args.follow_delay, args.flush_interval, args.read_line_buf_size, where_store, fail_store)
 
 
 if __name__ == "__main__":
