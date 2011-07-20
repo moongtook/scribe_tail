@@ -26,7 +26,7 @@ class Tailer(object):
     def __init__(self, file):
         self.file = file
         self.start_pos = self.file.tell()
-    
+
     def seek(self, pos, whence=0):
         self.file.seek(pos, whence)
 
@@ -50,18 +50,18 @@ class Tailer(object):
         while 1:
 
             if with_start:
-                where = start
+                whence = start
                 with_start = False
             else:
-                where = self.file.tell()
+                whence = self.file.tell()
 
-            self.seek(where)
+            self.seek(whence)
                 
             line = self.file.readline()
             if line:    
                 if trailing and line in self.line_terminators:
-                    # This is just the line terminator added to the end of the file
-                    # before a new line, ignore.
+                    # This is just the line terminator added to the end of the
+                    # file before a new line, ignore.
                     trailing = False
                     continue
 
@@ -72,16 +72,17 @@ class Tailer(object):
                         line = line[:-1]
 
                 trailing = False
-                next_where = self.file.tell()
-                # flush, line, where
-                yield False, line, next_where
+                next_whence = self.file.tell()
+                # flush, line, whence
+                yield False, line, next_whence
             else:
                 trailing = True
-                self.seek(where)
+                self.seek(whence)
 
-                if self.time_is_up_to_flush(last_flush_time, time.time(), flush_interval):
+                if self.time_is_up_to_flush(last_flush_time, time.time(),
+                        flush_interval):
                     last_flush_time = time.time()
-                    # flush, line, where
+                    # flush, line, whence
                     yield True, None, None
 
                 time.sleep(delay)
@@ -96,13 +97,14 @@ class Tailer(object):
 
 class Scribe(object):
 
-    def __init__(self, host, port, category):
+    def __init__(self, host="127.0.0.1", port=1463, category=None):
         self.category = category
         self.host = host
         self.port = port
         self.socket = TSocket.TSocket(host=self.host, port=self.port)
         self.transport = TTransport.TFramedTransport(self.socket)
-        self.protocol = TBinaryProtocol.TBinaryProtocol(trans=self.transport, strictRead=False, strictWrite=False)
+        self.protocol = TBinaryProtocol.TBinaryProtocol(trans=self.transport,
+                strictRead=False, strictWrite=False)
         self.client = scribe.Client(iprot=self.protocol, oprot=self.protocol)
         self.transport.open()
 
@@ -120,15 +122,16 @@ class Scribe(object):
 
 class FailStore(object):
 
-    def __init__(self, fail_store_path, maxMegaBytes, backupCount):
-        self.fail_store_path = fail_store_path
-        self.fail_store_filename = os.path.join(fail_store_path, 'scribe_tail_fail_store.log')
+    def __init__(self, path="", mb_per_store_file=200, backup_count=5):
+        fail_store_filename = os.path.join(path,
+                'scribe_tail_fail_store.log')
 
         self.logger = logging.getLogger('SribeTailFailStore')
         self.logger.setLevel(logging.ERROR)
 
         formatter = logging.Formatter('%(message)s')
-        handler = logging.handlers.RotatingFileHandler(self.fail_store_filename, maxBytes=maxMegaBytes*1024*1024, backupCount=backupCount)
+        handler = logging.handlers.RotatingFileHandler(fail_store_filename,
+                maxBytes=mb_per_store_file*1024*1024, backupCount=backup_count)
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
 
@@ -137,25 +140,25 @@ class FailStore(object):
 
 
 
-class WhereStore(object):
+class WhenceStore(object):
 
     def __init__(self, target_file):
-        self.where_file_name = target_file.name + '.scribe_tail'
+        self.whence_file_name = target_file.name + '.scribe_tail_whence'
         if not self.exists():
             self.touch()
-        self.f = open(self.where_file_name, 'r+')
+        self.f = open(self.whence_file_name, 'r+')
 
     def touch(self):
-        open(self.where_file_name, 'w').close()
+        open(self.whence_file_name, 'w').close()
 
     def exists(self):
-        return os.path.exists(self.where_file_name)
+        return os.path.exists(self.whence_file_name)
 
-    def where_file_ready(self):
+    def whence_file_ready(self):
         return (self.f and not self.f.closed)
 
     def start(self):
-        if self.where_file_ready():
+        if self.whence_file_ready():
             self.f.seek(0)
             start = self.f.read().strip()
             if start == "":
@@ -165,11 +168,11 @@ class WhereStore(object):
         else:
             return None
 
-    def where(self, where):
-        assert type(where) == int, 'position value must be int type'
-        if self.where_file_ready():
+    def whence(self, whence):
+        assert type(whence) == int, 'position value must be int type'
+        if self.whence_file_ready():
             self.f.seek(0)
-            self.f.write(str(where))
+            self.f.write(str(whence))
             self.f.truncate()
             self.f.flush()
 
@@ -178,27 +181,33 @@ class WhereStore(object):
 
 
 
-def follow(scribe_client, target_file, delay, flush_interval, read_line_buf_size, where_store, fail_store):
+def follow(scribe_client, target_file, delay=1.0, flush_interval=10.0,
+        read_line_buf_size=100, whence_store=None, fail_store=None):
 
     read_line_buf = []
 
     tailer = Tailer(target_file)
     
-    for time_to_flush, line, where in tailer.follow(delay, flush_interval, where_store.start()):
+    for time_to_flush, line, whence in tailer.follow(delay, flush_interval,
+            whence_store.start()):
 
         if time_to_flush:
             if len(read_line_buf) != 0:
-                flush(read_line_buf, scribe_client, where_store, fail_store)
+                flush(read_line_buf, scribe_client,
+                        whence_store=whence_store,
+                        fail_store=fail_store)
         else:
-            read_line_buf.append( (line, where) )
+            read_line_buf.append((line, whence))
             if len(read_line_buf) >= read_line_buf_size:
-                flush(read_line_buf, scribe_client, where_store, fail_store)
+                flush(read_line_buf, scribe_client,
+                        whence_store=whence_store,
+                        fail_store=fail_store)
 
 
 
-def flush(lines, scribe_client, where_store, fail_store):
+def flush(lines, scribe_client, whence_store=None, fail_store=None):
 
-    where_store.where(lines[-1][1])
+    whence_store.whence(lines[-1][1])
 
     data = '\n'.join([ lw[0] for lw in lines]) + '\n'
 
@@ -230,18 +239,30 @@ def flush(lines, scribe_client, where_store, fail_store):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(prog='scribe_tail', description='Follow file and send data to scribe.')
-    parser.add_argument('FILE', metavar='FILE', type=file, nargs=1, help='target file name')
-    parser.add_argument('-v', '--version', action='version', version='%(prog)s 0.3')
-    parser.add_argument('-c', '--category', required=True, help='scribe category')
-    parser.add_argument('-l', '--host', default='127.0.0.1', help='scribe host (default: 127.0.0.1)')
-    parser.add_argument('-p', '--port', default=1463, type=int, help='scribe port (default: 1463)')
-    parser.add_argument('--follow_delay', type=float, default=0.5, help='follow file delay(Sec) (default: 0.5)')
-    parser.add_argument('--read_line_buf_size', type=int, default=100, help='read line buffer size (default: 100)')
-    parser.add_argument('--flush_interval', type=float, default=10.0, help='flush read line buffer interval(Sec) (default: 10.0)')
-    parser.add_argument('--fail_store_path', required=True, help='store path to write scribe send failed data')
-    parser.add_argument('--fail_store_mb_per_file', type=int, default=200, help='fail store file size(MB) (default: 200)')
-    parser.add_argument('--fail_store_backup_count', type=int, default=5, help='fail store file backup count (default: 5)')
+    parser = argparse.ArgumentParser(prog='scribe_tail',
+            description='Follow file and send data to scribe.')
+    parser.add_argument('FILE', metavar='FILE', type=file, nargs=1,
+            help='target file name')
+    parser.add_argument('-v', '--version', action='version',
+            version='%(prog)s 0.3')
+    parser.add_argument('-c', '--category', required=True,
+            help='scribe category')
+    parser.add_argument('-l', '--host', default='127.0.0.1',
+            help='scribe host (default: 127.0.0.1)')
+    parser.add_argument('-p', '--port', default=1463, type=int,
+            help='scribe port (default: 1463)')
+    parser.add_argument('--follow_delay', type=float, default=0.5,
+            help='follow file delay(Sec) (default: 0.5)')
+    parser.add_argument('--read_line_buf_size', type=int, default=100,
+            help='read line buffer size (default: 100)')
+    parser.add_argument('--flush_interval', type=float, default=10.0,
+            help='flush read line buffer interval(Sec) (default: 10.0)')
+    parser.add_argument('--fail_store_path', required=True,
+            help='store path to write scribe send failed data')
+    parser.add_argument('--fail_store_mb_per_file', type=int, default=200,
+            help='fail store file size(MB) (default: 200)')
+    parser.add_argument('--fail_store_backup_count', type=int, default=5,
+            help='fail store file backup count (default: 5)')
     return parser.parse_args()
 
 
@@ -252,16 +273,24 @@ def main():
     target_file = args.FILE[0]
 
     # Scribe client
-    scribe_client = Scribe(args.host, args.port, args.category)
+    scribe_client = Scribe(host=args.host, port=args.port,
+            category=args.category)
 
-    # Where to start
-    where_store = WhereStore(target_file)
+    # Whence to start
+    whence_store = WhenceStore(target_file)
 
     # Fail store
-    fail_store = FailStore(args.fail_store_path, args.fail_store_mb_per_file, args.fail_store_backup_count)
+    fail_store = FailStore(path=args.fail_store_path,
+            mb_per_store_file=args.fail_store_mb_per_file,
+            backup_count=args.fail_store_backup_count)
 
     # Follow the file and send data to scribe
-    follow(scribe_client, target_file, args.follow_delay, args.flush_interval, args.read_line_buf_size, where_store, fail_store)
+    follow(scribe_client, target_file,
+            delay=args.follow_delay,
+            flush_interval=args.flush_interval,
+            read_line_buf_size=args.read_line_buf_size,
+            whence_store=whence_store,
+            fail_store=fail_store)
 
 
 if __name__ == "__main__":
