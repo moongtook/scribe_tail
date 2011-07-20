@@ -142,11 +142,13 @@ class FailStore(object):
 
 class WhenceStore(object):
 
-    def __init__(self, target_file):
+    def __init__(self, target_file, rewind=False):
         self.whence_file_name = target_file.name + '.scribe_tail_whence'
         if not self.exists():
             self.touch()
         self.f = open(self.whence_file_name, 'r+')
+        if rewind:
+            self.whence(0)
 
     def touch(self):
         open(self.whence_file_name, 'w').close()
@@ -251,6 +253,8 @@ def parse_args():
             help='scribe host (default: 127.0.0.1)')
     parser.add_argument('-p', '--port', default=1463, type=int,
             help='scribe port (default: 1463)')
+    parser.add_argument('--rewind', type=bool, default=False,
+            help='start read the file from the beginning (default: false)')
     parser.add_argument('--follow_delay', type=float, default=0.5,
             help='follow file delay(Sec) (default: 0.5)')
     parser.add_argument('--read_line_buf_size', type=int, default=100,
@@ -277,7 +281,7 @@ def main():
             category=args.category)
 
     # Whence to start
-    whence_store = WhenceStore(target_file)
+    whence_store = WhenceStore(target_file, rewind=args.rewind)
 
     # Fail store
     fail_store = FailStore(path=args.fail_store_path,
