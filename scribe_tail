@@ -122,15 +122,24 @@ class Scribe(object):
 
 class FailStore(object):
 
-    def __init__(self, path="", mb_per_store_file=200, backup_count=5):
-        fail_store_filename = os.path.join(path,
-                'scribe_tail_fail_store.log')
+    def __init__(self, target_file=None, path=None, mb_per_store_file=200,
+            backup_count=5):
+        fail_store_filename = 'scribe_tail_fail_store.log'
+        fail_store_full_path = None
+        if path:
+            fail_store_full_path = os.path.join(path, fail_store_filename)
+        else:
+            dir_of_target_file = os.path.dirname(
+                    os.path.abspath(target_file.name)) 
+            fail_store_full_path = os.path.join(dir_of_target_file,
+                    fail_store_filename)
+
 
         self.logger = logging.getLogger('SribeTailFailStore')
         self.logger.setLevel(logging.ERROR)
 
         formatter = logging.Formatter('%(message)s')
-        handler = logging.handlers.RotatingFileHandler(fail_store_filename,
+        handler = logging.handlers.RotatingFileHandler(fail_store_full_path,
                 maxBytes=mb_per_store_file*1024*1024, backupCount=backup_count)
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
@@ -261,8 +270,9 @@ def parse_args():
             help='read line buffer size (default: 100)')
     parser.add_argument('--flush_interval', type=float, default=10.0,
             help='flush read line buffer interval(Sec) (default: 10.0)')
-    parser.add_argument('--fail_store_path', required=True,
-            help='store path to write scribe send failed data')
+    parser.add_argument('--fail_store_path',
+            help='store path to write scribe send failed data '
+                '(default: same with FILE\'s directory)')
     parser.add_argument('--fail_store_mb_per_file', type=int, default=200,
             help='fail store file size(MB) (default: 200)')
     parser.add_argument('--fail_store_backup_count', type=int, default=5,
@@ -284,7 +294,8 @@ def main():
     whence_store = WhenceStore(target_file, rewind=args.rewind)
 
     # Fail store
-    fail_store = FailStore(path=args.fail_store_path,
+    fail_store = FailStore(target_file=target_file,
+            path=args.fail_store_path,
             mb_per_store_file=args.fail_store_mb_per_file,
             backup_count=args.fail_store_backup_count)
 
